@@ -36,15 +36,17 @@ namespace Csg
 
 		public Solid Union (params Solid[] others)
 		{
-			var csgs = new List<Solid> ();
-			csgs.Add (this);
-			csgs.AddRange (others);
-			var i = 1;
-			for (; i < csgs.Count; i += 2) {
-				var n = csgs[i - 1].UnionSub (csgs[i], false, false);
-				csgs.Add (n);
+			if (others.Length == 0) {
+				return this.Retesselated ().Canonicalized ();
 			}
-			return csgs[i - 1].Retesselated ().Canonicalized ();
+
+			var center = CombinedBoundsAll (this, others).Center;
+			var result = TranslateBy (this, center.Negated);
+			for (var i = 0; i < others.Length; i++) {
+				result = result.UnionSubLocal (TranslateBy (others[i], center.Negated));
+			}
+			result = result.Retesselated ().Canonicalized ();
+			return TranslateBy (result, center);
 		}
 
 		Solid UnionSub (Solid csg, bool retesselate, bool canonicalize)
@@ -52,25 +54,36 @@ namespace Csg
 			if (!MayOverlap (csg)) {
 				return UnionForNonIntersecting (csg);
 			}
-			else {
-				var a = new Tree (Bounds, Polygons);
-				var b = new Tree (csg.Bounds, csg.Polygons);
 
-				a.ClipTo (b, false);
-				b.ClipTo (a);
-				b.Invert ();
-				b.ClipTo (a);
-				b.Invert ();
+			var center = CombinedBounds (this, csg).Center;
+			var a = TranslateBy (this, center.Negated);
+			var b = TranslateBy (csg, center.Negated);
+			var result = a.UnionSubLocal (b);
+			if (retesselate)
+				result = result.Retesselated ();
+			if (canonicalize)
+				result = result.Canonicalized ();
+			return TranslateBy (result, center);
+		}
 
-				var newpolygons = new List<Polygon> (a.AllPolygons ());
-				newpolygons.AddRange (b.AllPolygons ());
-				var result = Solid.FromPolygons (newpolygons);
-				if (retesselate)
-					result = result.Retesselated ();
-				if (canonicalize)
-					result = result.Canonicalized ();
-				return result;
+		Solid UnionSubLocal (Solid csg)
+		{
+			if (!MayOverlap (csg)) {
+				return UnionForNonIntersecting (csg);
 			}
+
+			var treeA = new Tree (Bounds, Polygons);
+			var treeB = new Tree (csg.Bounds, csg.Polygons);
+
+			treeA.ClipTo (treeB, false);
+			treeB.ClipTo (treeA);
+			treeB.Invert ();
+			treeB.ClipTo (treeA);
+			treeB.Invert ();
+
+			var newpolygons = new List<Polygon> (treeA.AllPolygons ());
+			newpolygons.AddRange (treeB.AllPolygons ());
+			return Solid.FromPolygons (newpolygons);
 		}
 
 		Solid UnionForNonIntersecting (Solid csg)
@@ -304,6 +317,55 @@ namespace Csg
 				hashCode = hashCode * -1521134295 + obj.SharedTag.GetHashCode ();
 				return hashCode;
 			}
+		}
+
+		static BoundingBox CombinedBounds (Solid a, Solid b)
+		{
+			if (a.Polygons.Count == 0) {
+				return b.Bounds;
+			}
+			if (b.Polygons.Count == 0) {
+				return a.Bounds;
+			}
+			var min = a.Bounds.Min.Min (b.Bounds.Min);
+			var max = a.Bounds.Max.Max (b.Bounds.Max);
+			return new BoundingBox (min, max);
+		}
+
+		static BoundingBox CombinedBoundsAll (Solid initial, Solid[] others)
+		{
+			var hasBounds = false;
+			var min = new Vector3D (0, 0, 0);
+			var max = new Vector3D (0, 0, 0);
+			void Include (Solid solid)
+			{
+				if (solid.Polygons.Count == 0) {
+					return;
+				}
+				if (!hasBounds) {
+					min = solid.Bounds.Min;
+					max = solid.Bounds.Max;
+					hasBounds = true;
+				}
+				else {
+					min = min.Min (solid.Bounds.Min);
+					max = max.Max (solid.Bounds.Max);
+				}
+			}
+
+			Include (initial);
+			foreach (var other in others) {
+				Include (other);
+			}
+			return hasBounds ? new BoundingBox (min, max) : new BoundingBox (new Vector3D (0, 0, 0), new Vector3D (0, 0, 0));
+		}
+
+		static Solid TranslateBy (Solid solid, Vector3D offset)
+		{
+			if (offset.X == 0.0 && offset.Y == 0.0 && offset.Z == 0.0) {
+				return solid;
+			}
+			return solid.Translate (offset);
 		}
 
 		BoundingBox Bounds {
